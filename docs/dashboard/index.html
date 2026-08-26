@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LAB-04 · Rate Limiting — Límites de peticiones</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body><!-- ================= HEADER ================= -->
+<header class="hero">
+  <div class="wrap">
+    <span class="tag">● Laboratorio de Ingeniería · Temporada 1</span>
+    <h1>LAB-04 · <span class="accent">Rate Limiting</span> — límites de peticiones</h1>
+    <p class="sub">
+      Un endpoint público acepta <b>cualquier cantidad de peticiones</b>: un cliente mal comportado, un
+      script de scraping o un ataque de fuerza bruta pueden disparar <b>miles de requests por segundo</b>.
+      Sin límites, el servicio es víctima de sus propios usuarios. Este dashboard narra el laboratorio
+      completo: el <b>problema</b> (endpoint sin límites → ráfagas, scraping, saturación), los
+      <b>3 algoritmos clásicos</b> (<b>fixed window</b>, <b>sliding window</b> y <b>token bucket</b>)
+      con simulaciones interactivas, los <b>headers</b> de una API bien comportada
+      (<code>429</code>, <code>Retry-After</code>, <code>X-RateLimit-*</code>), los <b>5 experimentos</b>
+      del plan y las <b>5 hipótesis</b> del README.
+    </p>
+    <div class="chips">
+      <span class="chip">Stack: <b>Node 26 · TypeScript nativo · node:http</b></span>
+      <span class="chip">Límite: <b>100 req/min</b></span>
+      <span class="chip">Estado: <b>100 % en memoria</b></span>
+      <span class="chip">Método: <b>reloj virtual acelerado + simulación</b></span>
+      <span class="chip">Evidencia: <b>pendiente (exp-04)</b></span>
+    </div>
+  </div>
+</header>
+
+<!-- ================= 01 · EL PROBLEMA ================= -->
+<section id="problema">
+  <div class="wrap">
+    <h2><span class="num">01</span> El problema: un endpoint público sin límites</h2>
+    <p class="lede">
+      Un endpoint público acepta cualquier cantidad de peticiones. Un cliente mal comportado, un script
+      de scraping o un ataque de fuerza bruta pueden disparar <b>miles de requests por segundo</b>: la
+      base de datos se satura, la API responde lento para <b>todos</b>, y el costo del servidor se
+      dispara. <b>Sin límites, el servicio es víctima de sus propios usuarios.</b>
+    </p>
+
+    <div class="growth">
+      <div class="gch g1"><div class="k">Uso normal</div><div class="v">estable</div><div class="d">las peticiones esperadas se atienden sin problema</div></div>
+      <div class="gch g2"><div class="k">Ráfaga / scraping</div><div class="v">pico</div><div class="d">cientos o miles de requests por segundo</div></div>
+      <div class="gch g3"><div class="k">Saturación</div><div class="v">colapso</div><div class="d">la API responde lento para todos y el costo se dispara</div></div>
+    </div>
+
+    <div class="cmp-grid" style="margin-top:22px">
+      <div class="card">
+        <h3>¿Quiénes abusan del endpoint?</h3>
+        <ul class="req-list">
+          <li><b>Ráfagas (burst)</b> — un cliente dispara miles de requests en segundos: retries agresivos, webhooks mal configurados, procesos duplicados.</li>
+          <li><b>Scraping</b> — bots que recorren el endpoint para copiar datos; consumen recursos sin aportar usuarios reales.</li>
+          <li><b>Fuerza bruta</b> — intentos repetidos contra endpoints sensibles (login, recuperación de cuenta) hasta acertar.</li>
+          <li><b>Saturación</b> — el efecto acumulado: la base de datos se satura, la API degrada su latencia para todos y el costo del servidor sube.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>El flujo del abuso</h3>
+        <div class="step-flow">
+          <span class="step conflict">1 · peticiones ilimitadas</span><span class="arrow">→</span>
+          <span class="step conflict">2 · DB y CPU saturados</span><span class="arrow">→</span>
+          <span class="step block">3 · latencia para todos</span><span class="arrow">→</span>
+          <span class="step conflict">4 · costo del servidor ↑</span>
+        </div>
+        <p class="lede" style="margin-top:10px; margin-bottom:0">
+          El <b>rate limiting</b> corta este flujo en el paso 1: permitir un máximo de peticiones por
+          ventana de tiempo (p.&nbsp;ej. <b>100 requests por minuto</b>) y responder con
+          <code>429 Too Many Requests</code> cuando se excede.
+        </p>
+      </div>
+    </div>
+
+    <div class="callout">
+      La pregunta del laboratorio: <i>"100 por minuto" se puede implementar de varias formas, y cada una
+      se comporta distinto bajo ráfagas</i>. ¿Cuenta ventanas fijas de calendario? ¿Ventanas deslizantes
+      continuas? ¿Un balde de tokens que se recarga con el tiempo? La elección cambia <b>qué tan estricto
+      es el límite</b>, <b>cuánta memoria usa</b>, y <b>cómo se siente para el usuario</b>.
+    </div>
+  </div>
+</section>
+
+<!-- ================= 02 · LOS 3 ALGORITMOS ================= -->
+<section id="algoritmos">
+  <div class="wrap">
+    <h2><span class="num">02</span> Los 3 algoritmos clásicos</h2>
+    <p class="lede">
+      Los tres implementan el mismo límite (<b>100 req/min</b>), pero con reglas distintas. Cada uno tiene
+      una simulación interactiva que muestra su comportamiento bajo ráfagas — presione <b>▶ Ejecutar
+      simulación</b> en cada tarjeta.
+    </p>
+
+    <!-- ══════════ (a) FIXED WINDOW ══════════ -->
+    <article class="solution" id="sol-fixed">
+      <header class="sol-head">
+        <div>
+          <h3><span class="sol-num warn">(a)</span> Fixed window <span class="sol-tag warn">⚠️ SIMPLE PERO PUNZANTE</span></h3>
+          <p class="sol-desc">
+            Cuenta en <b>ventanas fijas de calendario</b> (00:00–00:01, 00:01–00:02, …): un contador por
+            ventana que se reinicia cuando empieza la siguiente. Memoria mínima (un contador + el inicio
+            de la ventana), cero poda, trivial de implementar. Su debilidad conocida es la
+            <b>"carrera de límites"</b>: en el borde entre dos ventanas, un cliente puede disparar
+            <b>el doble del límite</b> sin ser bloqueado — 100 al final de una ventana + 100 al inicio de
+            la siguiente = <b>200 pasan</b>.
+          </p>
+        </div>
+        <div class="sol-result">límite<b>100 por ventana</b><span class="verdict-chip warn">borde ×2</span></div>
+      </header>
+
+      <div class="sol-grid">
+        <div class="sol-code">
+          <div class="code-tabs"><span class="tab-label">esquema (TypeScript ilustrativo)</span></div>
+          <div class="code-view">
+            <div class="cline" data-phase="fn"><span class="ln">1</span><span class="cm">// Fixed window: windowStart = floor(now / windowMs) * windowMs</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">2</span><span class="tx">export function createFixedWindow(clock: Now, opts: { limit: number; windowMs: number }) {</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">3</span><span class="tx">  let count = 0;</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">4</span><span class="tx">  let windowStart = Math.floor(clock() / opts.windowMs) * opts.windowMs;</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">5</span><span class="tx">  return {</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">6</span><span class="tx">    allow() {</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">7</span><span class="tx">      const now = clock();</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">8</span><span class="tx">      const start = Math.floor(now / opts.windowMs) * opts.windowMs;</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">9</span><span class="tx">      if (start !== windowStart) { count = 0; windowStart = start; }</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">10</span><span class="tx">      if (count &gt;= opts.limit) return <span class="v">false</span>;</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">11</span><span class="tx">      count += 1; return <span class="v">true</span>;</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">12</span><span class="tx">    },</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">13</span><span class="tx">  };</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">14</span><span class="tx">}</span></div>
+          </div>
+        </div>
+
+        <div class="sol-sim sim-host" id="sim-fixed">
+          <div class="sim-stats">
+            <div class="stat"><div class="k">Requests</div><div class="v info sim-total">—</div></div>
+            <div class="stat"><div class="k">Admitidas</div><div class="v good sim-ok">—</div></div>
+            <div class="stat"><div class="k">Rechazadas</div><div class="v bad sim-rejected">—</div></div>
+          </div>
+          <div class="win-row sim-windows" style="margin-bottom:12px"></div>
+          <div class="sim-txt">La carrera de límites: 100 requests al final de la ventana W0 + 100 al inicio de W1. Presione <b>▶ Ejecutar simulación</b>.</div>
+          <button class="btn-play sim-run">▶ Ejecutar simulación</button>
+          <div class="sol-verdict" hidden></div>
+        </div>
+      </div>
+
+      <ol class="sol-steps">
+        <li>La ventana <b>W0</b> (00:00–00:01) está casi vacía: llegan <b>100 requests</b> en los últimos instantes (t=59,5–60 s) → pasan todas; el contador llega a 100.</li>
+        <li>En <b>t=60,0 s</b> empieza la ventana <b>W1</b> (00:01–00:02): el contador <b>se reinicia a 0</b> por ser otra ventana de calendario.</li>
+        <li>Llegan <b>100 requests</b> en los primeros instantes de W1 → pasan todas.</li>
+        <li>Resultado: <b>200 admitidas en ~1 segundo</b> de tiempo real. El límite de 100/min se duplicó en el borde.</li>
+      </ol>
+      <div class="sol-verdict" hidden></div>
+
+      <div class="insight">
+        <div class="insight-tag">⚠️ La carrera de límites</div>
+        El fixed window es <b>simple y barato</b> (memoria mínima), pero el borde entre ventanas es
+        permeable: el límite se mide por <b>tramos fijos de calendario</b>, no por ningún intervalo real
+        de 60 segundos. Un cliente que conoce el patrón puede duplicar su cuota.
+      </div>
+    </article>
+
+    <!-- ══════════ (b) SLIDING WINDOW ══════════ -->
+    <article class="solution" id="sol-sliding">
+      <header class="sol-head">
+        <div>
+          <h3><span class="sol-num good">(b)</span> Sliding window <span class="sol-tag good">✅ CIERRA EL AGUJERO</span></h3>
+          <p class="sol-desc">
+            Mantiene un <b>log de timestamps</b> de las peticiones admitidas y rechaza si hay
+            <b>≥ 100 entradas en cualquier intervalo de 60 s</b> <code>(now−60000, now]</code>. Al
+            deslizar la ventana sobre el tiempo real, el límite aplica a <b>cualquier</b> intervalo de 60
+            segundos, no a tramos fijos — <b>cierra el agujero del fixed window</b>. El costo: más estado
+            (el log crece con el tráfico y hay que <b>podar</b> entradas viejas en cada
+            <code>allow()</code>).
+          </p>
+        </div>
+        <div class="sol-result">límite<b>cualquier intervalo de 60 s</b><span class="verdict-chip good">sin borde ×2</span></div>
+      </header>
+
+      <div class="sol-grid">
+        <div class="sol-code">
+          <div class="code-tabs"><span class="tab-label">esquema (TypeScript ilustrativo)</span></div>
+          <div class="code-view">
+            <div class="cline" data-phase="fn"><span class="ln">1</span><span class="cm">// Sliding window (log de timestamps) con poda en allow()</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">2</span><span class="tx">export function createSlidingWindow(clock: Now, opts: { limit: number; windowMs: number }) {</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">3</span><span class="tx">  const timestamps: number[] = [];</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">4</span><span class="tx">  return {</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">5</span><span class="tx">    allow() {</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">6</span><span class="tx">      const now = clock();</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">7</span><span class="tx">      while (timestamps.length &gt; 0 &amp;&amp; timestamps[0] &lt;= now - opts.windowMs) timestamps.shift();</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">8</span><span class="tx">      if (timestamps.length &gt;= opts.limit) return <span class="v">false</span>;</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">9</span><span class="tx">      timestamps.push(now); return <span class="v">true</span>;</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">10</span><span class="tx">    },</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">11</span><span class="tx">  };</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">12</span><span class="tx">}</span></div>
+          </div>
+        </div>
+
+        <div class="sol-sim sim-host" id="sim-sliding">
+          <div class="sim-stats">
+            <div class="stat"><div class="k">Requests</div><div class="v info sim-total">—</div></div>
+            <div class="stat"><div class="k">Admitidas</div><div class="v good sim-ok">—</div></div>
+            <div class="stat"><div class="k">Rechazadas</div><div class="v bad sim-rejected">—</div></div>
+          </div>
+          <div class="timeline sim-timeline" style="margin-bottom:12px"></div>
+          <div class="sim-txt">El mismo patrón de ráfaga, ahora con ventana deslizante: en t=60 s el intervalo <code>(0, 60000]</code> todavía contiene las 100 del final de W0. Presione <b>▶ Ejecutar simulación</b>.</div>
+          <button class="btn-play sim-run">▶ Ejecutar simulación</button>
+          <div class="sol-verdict" hidden></div>
+        </div>
+      </div>
+
+      <ol class="sol-steps">
+        <li>Las <b>100 requests</b> del final de la ventana anterior entran al log (t=59,5–60 s).</li>
+        <li>En <b>t=60,0 s</b> llega la primera request "de la ventana nueva": el intervalo <code>(0, 60000]</code> <b>ya contiene 100 entradas</b> → se rechaza con <b>429</b>. En fixed window esta misma request habría pasado.</li>
+        <li>Las siguientes 99 requests también se rechazan: el log sigue con ≥ 100 entradas en los últimos 60 s.</li>
+        <li>Cuando el reloj avanza y las entradas viejas <b>salen de la ventana</b> (poda), las nuevas requests vuelven a pasar.</li>
+      </ol>
+      <div class="sol-verdict" hidden></div>
+
+      <div class="insight">
+        <div class="insight-tag">✅ Cualquier intervalo de 60 s</div>
+        El sliding window aplica el límite a <b>todo intervalo deslizante</b>: el agujero del borde
+        desaparece. El compromiso es <b>memoria vs. exactitud</b>: el log crece con el tráfico y la poda
+        cuesta CPU por request. (Existen aproximaciones por precision sets para recortar memoria, a costa
+        de exactitud — se documentan en la guía.)
+      </div>
+    </article>
+
+    <!-- ══════════ (c) TOKEN BUCKET ══════════ -->
+    <article class="solution" id="sol-token">
+      <header class="sol-head">
+        <div>
+          <h3><span class="sol-num info">(c)</span> Token bucket <span class="sol-tag info">✅ RÁFAGAS CONTROLADAS</span></h3>
+          <p class="sol-desc">
+            Un <b>balde con capacidad 100 tokens</b> que se recarga a una <b>tasa fija</b>
+            (<code>rate = 100/60 ≈ 1,67 tokens/s</code>). Cada petición consume 1 token; se admite si hay
+            <b>≥ 1</b>. Permite <b>picos cortos</b> (ráfagas de hasta el tamaño del balde) mientras la tasa
+            promedio se mantiene dentro del límite. El refill usa <b>float</b>: los tokens se acumulan
+            fraccionados y se comparan con <code>≥ 1</code>. Es el más flexible de los tres.
+          </p>
+        </div>
+        <div class="sol-result">capacidad<b>100 · refill 100/60 t/s</b><span class="verdict-chip info">ráfaga = capacity</span></div>
+      </header>
+
+      <div class="sol-grid">
+        <div class="sol-code">
+          <div class="code-tabs"><span class="tab-label">esquema (TypeScript ilustrativo)</span></div>
+          <div class="code-view">
+            <div class="cline" data-phase="fn"><span class="ln">1</span><span class="cm">// Token bucket: refill float con clamp y comparación &gt;= 1</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">2</span><span class="tx">export function createTokenBucket(clock: Now, opts: { capacity: number; refillPerMs: number }) {</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">3</span><span class="tx">  let tokens = opts.capacity;</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">4</span><span class="tx">  let last = clock();</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">5</span><span class="tx">  return {</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">6</span><span class="tx">    allow() {</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">7</span><span class="tx">      const now = clock();</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">8</span><span class="tx">      const delta = now - last; last = now;</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">9</span><span class="tx">      tokens = Math.min(opts.capacity, tokens + delta * opts.refillPerMs);</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">10</span><span class="tx">      if (tokens &lt; 1) return <span class="v">false</span>;</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">11</span><span class="tx">      tokens -= 1; return <span class="v">true</span>;</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">12</span><span class="tx">    },</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">13</span><span class="tx">  };</span></div>
+            <div class="cline" data-phase="fn"><span class="ln">14</span><span class="tx">}</span></div>
+          </div>
+        </div>
+
+        <div class="sol-sim sim-host" id="sim-token">
+          <div class="sim-stats">
+            <div class="stat"><div class="k">Tokens</div><div class="v info sim-tokens">—</div></div>
+            <div class="stat"><div class="k">Admitidas</div><div class="v good sim-ok">—</div></div>
+            <div class="stat"><div class="k">Rechazadas</div><div class="v bad sim-rejected">—</div></div>
+          </div>
+          <div class="bucket sim-bucket" style="margin-bottom:12px"></div>
+          <div class="sim-txt">Dos fases: <b>ráfaga corta</b> (30 requests, todas pasan) y <b>ráfaga sostenida</b> (120 requests: el balde se vacía y empieza el 429). Presione <b>▶ Ejecutar simulación</b>.</div>
+          <button class="btn-play sim-run">▶ Ejecutar simulación</button>
+          <div class="sol-verdict" hidden></div>
+        </div>
+      </div>
+
+      <ol class="sol-steps">
+        <li><b>Ráfaga corta</b>: el balde está lleno (100 tokens) → 30 requests pasan todas; el balde queda en 70. El refill casi no se nota en segundos.</li>
+        <li><b>Ráfaga sostenida</b>: 100 requests pasan (el balde se vacía a 0) → las siguientes <b>se rechazan con 429</b> hasta que el refill acumule tokens.</li>
+        <li><b>Refill</b>: a 1,67 tokens/s, en ~6 s se acumulan ~10 tokens → las próximas ~10 requests pasan, y así sucesivamente.</li>
+        <li>Resultado: la <b>tasa promedio</b> se mantiene en 100/min mientras los picos usan el "crédito" acumulado del balde.</li>
+      </ol>
+      <div class="sol-verdict" hidden></div>
+
+      <div class="insight">
+        <div class="insight-tag">✅ El balde perdona picos, no abusos</div>
+        El token bucket es el más flexible: una <b>ráfaga de hasta la capacidad</b> pasa sin fricción, pero
+        el <b>sostenido</b> se corta cuando el balde se vacía. El refill <b>float</b> (comparar con
+        <code>≥ 1</code>) evita desperdiciar fracciones de token entre peticiones.
+      </div>
+    </article>
+
+    <!-- ══════════ COMPARACIÓN DE COMPROMISOS ══════════ -->
+    <div class="card" style="margin-top:8px">
+      <h3>Los compromisos de cada algoritmo</h3>
+      <table class="keys">
+        <thead>
+          <tr><th>Algoritmo</th><th>Estado en memoria</th><th>Exactitud del límite</th><th>Memoria</th><th>CPU por request</th><th>Ráfagas</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="k">Fixed window</td>
+            <td>contador + inicio de ventana</td>
+            <td class="num">borde permeable (×2)</td>
+            <td class="num">mínima (constante)</td>
+            <td class="num">mínima</td>
+            <td>sin control fino en el borde</td>
+          </tr>
+          <tr>
+            <td class="k">Sliding window (log)</td>
+            <td>log de timestamps</td>
+            <td class="num">exacta en cualquier intervalo</td>
+            <td class="num">crece con el tráfico (poda)</td>
+            <td class="num">poda + conteo por request</td>
+            <td>controlada</td>
+          </tr>
+          <tr>
+            <td class="k">Token bucket</td>
+            <td>tokens + último refill</td>
+            <td class="num">promedio acotado; pico = capacidad</td>
+            <td class="num">constante</td>
+            <td class="num">mínima</td>
+            <td>ráfaga = capacidad, sostenido cortado</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 03 · HEADERS Y RESPUESTAS ================= -->
+<section id="headers">
+  <div class="wrap">
+    <h2><span class="num">03</span> Headers y respuestas: el idioma del 429</h2>
+    <p class="lede">
+      Limitar del lado del servidor es solo una mitad: conviene <b>comunicar el estado</b> para que el
+      cliente pueda comportarse bien. Dos familias de headers, con estatus normativo distinto:
+    </p>
+
+    <div class="cmp-grid">
+      <div class="card">
+        <h3><code>429 Too Many Requests</code> — RFC 6585 (obligatorio)</h3>
+        <ul class="req-list">
+          <li><b>Retry-After</b> — el 429 <b>DEBE</b> incluir este header (RFC 6585): cuántos segundos esperar antes de reintentar. Formato <code>delay-seconds</code> (entero).</li>
+          <li>Es el código correcto cuando el límite de peticiones se agotó; no es un error del cliente ni del servidor: es <b>«vuelva más tarde»</b>.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3><code>X-RateLimit-*</code> — de-facto (borrador)</h3>
+        <ul class="req-list">
+          <li><b>X-RateLimit-Limit</b> — el límite de la ventana (p. ej. <code>100</code>).</li>
+          <li><b>X-RateLimit-Remaining</b> — cuántas peticiones quedan (<code>≥ 0</code>, decreciente).</li>
+          <li><b>X-RateLimit-Reset</b> — cuándo se restablece el límite, en <b>epoch segundos</b>.</li>
+          <li>No son obligatorios: son convención del borrador <code>draft-ietf-httpapi-ratelimit-headers</code>.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="sol-code" id="code-headers" style="margin-top:18px">
+      <div class="code-tabs">
+        <button class="tab-btn active" data-lang="ok">200 · dentro del límite</button>
+        <button class="tab-btn" data-lang="rl">429 · límite agotado</button>
+      </div>
+      <div class="code-view" data-lang="ok">
+        <div class="cline" data-phase="resp"><span class="ln">1</span><span class="tx">HTTP/1.1 <span class="v">200 OK</span></span></div>
+        <div class="cline" data-phase="resp"><span class="ln">2</span><span class="tx">Content-Type: application/json</span></div>
+        <div class="cline" data-phase="resp"><span class="ln">3</span><span class="tx">X-RateLimit-Limit: <span class="v">100</span></span></div>
+        <div class="cline" data-phase="resp"><span class="ln">4</span><span class="tx">X-RateLimit-Remaining: <span class="v">42</span></span></div>
+        <div class="cline" data-phase="resp"><span class="ln">5</span><span class="tx">X-RateLimit-Reset: <span class="v">1765217100</span>  <span class="cm">// epoch segundos</span></span></div>
+        <div class="cline" data-phase="resp"><span class="ln">6</span><span class="cm">// Remaining decrece con cada request: 99, 98, 97, …</span></div>
+      </div>
+      <div class="code-view" data-lang="rl" hidden>
+        <div class="cline" data-phase="resp"><span class="ln">1</span><span class="tx">HTTP/1.1 <span class="v">429 Too Many Requests</span></span></div>
+        <div class="cline" data-phase="resp"><span class="ln">2</span><span class="tx">Content-Type: application/json</span></div>
+        <div class="cline" data-phase="resp"><span class="ln">3</span><span class="tx">Retry-After: <span class="v">37</span>  <span class="cm">// RFC 6585: MUST en todo 429</span></span></div>
+        <div class="cline" data-phase="resp"><span class="ln">4</span><span class="tx">X-RateLimit-Limit: <span class="v">100</span></span></div>
+        <div class="cline" data-phase="resp"><span class="ln">5</span><span class="tx">X-RateLimit-Remaining: <span class="v">0</span></span></div>
+        <div class="cline" data-phase="resp"><span class="ln">6</span><span class="tx">X-RateLimit-Reset: <span class="v">1765217100</span>  <span class="cm">// &gt; ahora</span></span></div>
+        <div class="cline" data-phase="resp"><span class="ln">7</span><span class="cm">// Body (ejemplo): { "error": "rate_limit_exceeded", "retry_after": 37 }</span></div>
+      </div>
+    </div>
+
+    <div class="callout" style="margin-top:18px">
+      <b>RFC 6585 vs. borrador de headers.</b> El <code>429</code> y su <code>Retry-After</code> son
+      <b>obligatorios</b> (RFC 6585: el servidor que responde 429 <b>MUST</b> incluir
+      <code>Retry-After</code>). Los <code>X-RateLimit-*</code> son una convención <b>de-facto</b> del
+      borrador <code>draft-ietf-httpapi-ratelimit-headers</code>: casi todas las APIs los exponen, pero
+      no son un estándar aprobado. En el laboratorio, <b>toda</b> respuesta (200 y 429) incluye los tres
+      <code>X-RateLimit-*</code>; el <code>Reset</code> viaja en <b>epoch segundos</b>.
+    </div>
+  </div>
+</section>
+
+<!-- ================= 04 · LOS 5 EXPERIMENTOS ================= -->
+<section id="experimentos">
+  <div class="wrap">
+    <h2><span class="num">04</span> Los 5 experimentos del plan</h2>
+    <p class="lede">
+      Cada experimento es un script autocontenido que usa un <b>reloj virtual acelerado</b>
+      (<code>createFakeClock</code>) para cruzar bordes de ventana <b>sin esperar 60 s reales</b>; la
+      latencia se mide con <code>performance.now()</code>. Cada corrida captura su evidencia en
+      <code>docs/output-*.txt</code>.
+    </p>
+    <div class="card">
+      <table class="evidence">
+        <thead>
+          <tr><th>Exp</th><th>Qué mide</th><th>Patrón de prueba</th><th>Evidencia</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>01 · Fixed window <span class="tag warn" style="margin-left:4px">⚠️ BORDE</span></td>
+            <td>límite de 100/min por ventana fija</td>
+            <td>ráfaga que cruza el borde de ventana; contar éxitos/429</td>
+            <td><code>docs/output-01-fixed.txt</code></td>
+          </tr>
+          <tr>
+            <td>02 · Sliding window <span class="tag good" style="margin-left:4px">✅ INTERVALO</span></td>
+            <td>mismo límite con ventana deslizante (log de timestamps)</td>
+            <td>el mismo patrón de ráfaga; medir el borde cerrado</td>
+            <td><code>docs/output-02-sliding.txt</code></td>
+          </tr>
+          <tr>
+            <td>03 · Token bucket <span class="tag info" style="margin-left:4px">🔵 REFILL</span></td>
+            <td>capacity + refill rate (float)</td>
+            <td>ráfaga corta (todos pasan) vs. sostenida (se vacía y empieza el 429)</td>
+            <td><code>docs/output-03-token.txt</code></td>
+          </tr>
+          <tr>
+            <td>04 · Comparativa bajo ráfaga <span class="tag good" style="margin-left:4px">📊 P95/P99</span></td>
+            <td>tabla de medición: requests totales, exitosos, 429, latencias p95/p99 y distribución temporal</td>
+            <td>el mismo patrón de ráfaga contra los 3 algoritmos</td>
+            <td><code>docs/output-04-burst.txt</code> + dashboard</td>
+          </tr>
+          <tr>
+            <td>05 · Cliente vs. servidor <span class="tag warn" style="margin-left:4px">🧪 OPCIONAL→SCRIPT</span></td>
+            <td>enforcement: cliente que respeta <code>Retry-After</code>/<code>X-RateLimit-Remaining</code> (se autopausa) vs. cliente ciego</td>
+            <td>ambos contra el <code>api.ts</code> del propio lab vía <code>fetch</code>; el respetuoso debe recibir <b>menos 429</b></td>
+            <td><code>docs/output-05-client.txt</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="lede" style="margin:12px 0 0">
+        <b>Exp-05</b>: el README lo marca opcional; el plan lo cubre como script propio y autocontenido
+        (<code>src/exp-05-client.ts</code>) contra el <code>api.ts</code> del propio laboratorio. La
+        demostración clave: <b>un cliente que respeta los headers se comporta mejor que uno ciego</b> —
+        sin headers, el 429 es solo un número que el cliente ignora.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 05 · LAS 5 HIPÓTESIS ================= -->
+<section id="hipotesis">
+  <div class="wrap">
+    <h2><span class="num">05</span> Las 5 hipótesis del README</h2>
+    <p class="lede">
+      Antes de correr los experimentos, el README plantea estas expectativas. Los experimentos existen
+      para <b>confirmarlas o desmentirlas con datos medidos</b> — no para darles la razón por defecto.
+    </p>
+    <div class="axiom-grid">
+      <div class="axiom">
+        <span class="ax-num">H1</span>
+        <h3>Fixed window es simple pero punzante</h3>
+        <p class="ax-quote">"En el borde entre dos ventanas, un cliente puede disparar el doble del límite sin ser bloqueado."</p>
+        <p class="ax-body">
+          Ventanas fijas de calendario (00:00–00:01, …): 100 al final de una ventana + 100 al inicio de la
+          siguiente = <b>200 pasan</b> — la "carrera de límites".
+        </p>
+        <div class="ax-rule"><b>Prueba:</b> exp-01 · ráfaga cruzando el borde.</div>
+      </div>
+      <div class="axiom">
+        <span class="ax-num">H2</span>
+        <h3>Sliding window suaviza el borde</h3>
+        <p class="ax-quote">"Al deslizar la ventana sobre el tiempo real, el límite aplica a cualquier intervalo de 60 segundos."</p>
+        <p class="ax-body">
+          Cierra el agujero del fixed window a costa de <b>más estado y cómputo</b> (o de aproximaciones
+          por log/timestamps).
+        </p>
+        <div class="ax-rule"><b>Prueba:</b> exp-02 · el mismo patrón de ráfaga.</div>
+      </div>
+      <div class="axiom">
+        <span class="ax-num">H3</span>
+        <h3>Token bucket permite ráfagas controladas</h3>
+        <p class="ax-quote">"El bucket acumula tokens y se recarga a una tasa fija; permite picos cortos de hasta el tamaño del bucket."</p>
+        <p class="ax-body">
+          La <b>tasa promedio</b> se mantiene dentro del límite mientras los picos usan el crédito
+          acumulado. El más flexible de los tres.
+        </p>
+        <div class="ax-rule"><b>Prueba:</b> exp-03 · ráfaga corta vs. sostenida.</div>
+      </div>
+      <div class="axiom">
+        <span class="ax-num">H4</span>
+        <h3>Bajo ráfagas sostenidas, los tres bloquean igual de tarde</h3>
+        <p class="ax-quote">"Con 1000 requests en ráfaga, todos terminan rechazando ~el mismo total."</p>
+        <p class="ax-body">
+          Pero con <b>distinto patrón de éxitos/429 en el tiempo</b>: el token bucket deja pasar una ráfaga
+          inicial; el sliding window reparte de forma más pareja.
+        </p>
+        <div class="ax-rule"><b>Prueba:</b> exp-04 · comparativa bajo ráfaga (éxitos, 429, p95/p99).</div>
+      </div>
+      <div class="axiom">
+        <span class="ax-num">H5</span>
+        <h3>Los headers importan</h3>
+        <p class="ax-quote">"Un cliente que respeta Retry-After y X-RateLimit-Remaining se comporta mejor que uno ciego."</p>
+        <p class="ax-body">
+          Sin headers, el 429 es <b>solo un número que el cliente ignora</b>; con ellos, el cliente puede
+          autopausarse y reducir sus propios rechazos.
+        </p>
+        <div class="ax-rule"><b>Prueba:</b> exp-05 · cliente respetuoso vs. ciego contra <code>api.ts</code>.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 06 · DATOS DE LA COMPARATIVA (EXP-04) ================= -->
+<section id="datos">
+  <div class="wrap">
+    <h2><span class="num">06</span> Datos de la comparativa (exp-04)</h2>
+    <p class="lede">
+      La evidencia que debe producir el laboratorio: <b>requests totales, exitosos, 429, latencias
+      p95/p99 y distribución temporal</b> para los tres algoritmos bajo el mismo patrón de ráfaga.
+    </p>
+
+    <div class="data-banner" id="data-banner">
+      ⏳ <b>Datos simulados de ejemplo</b> — esta sección muestra valores <b>fabricados</b> para ilustrar
+      el formato del dashboard. Se reemplazarán con la <b>evidencia real de exp-04</b>
+      (<code>docs/output-04-burst.txt</code>) cuando el laboratorio esté implementado y ejecutado.
+    </div>
+
+    <div class="cmp-grid" style="margin-top:18px">
+      <div class="card">
+        <h3>Éxitos vs. 429 (1.000 requests en ráfaga)</h3>
+        <div class="bars sim-bars" id="data-bars"></div>
+      </div>
+      <div class="card">
+        <h3>Métricas por algoritmo</h3>
+        <table class="keys" id="data-table">
+          <thead>
+            <tr><th>Algoritmo</th><th>Total</th><th>Éxitos</th><th>429</th><th>p95 (ms)</th><th>p99 (ms)</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <p class="lede" style="margin:10px 0 0" id="data-note"></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= FOOTER ================= -->
+<footer class="site-foot">
+  <div class="wrap">
+    <b>LAB-04 · Rate Limiting</b> — dashboard explicativo del laboratorio. Guía completa en
+    <code>docs/LAB-04-guide.md</code> · README introductorio en la raíz del laboratorio. El dashboard está
+    versionado; las evidencias (<code>docs/output-*.txt</code>) son regenerables y se ignoran en git.
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

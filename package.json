@@ -1,0 +1,24 @@
+{
+  "name": "lab-04-rate-limiting",
+  "version": "1.0.0",
+  "description": "Laboratorio de rate limiting - fixed window, sliding window y token bucket contra un límite conceptual de 100 req/min",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=26.0.0"
+  },
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc --noEmit",
+    "exp:fixed": "node src/exp-01-fixed.ts",
+    "exp:sliding": "node src/exp-02-sliding.ts",
+    "exp:token": "node src/exp-03-token.ts",
+    "exp:burst": "node src/exp-04-burst.ts",
+    "exp:client": "node src/exp-05-client.ts",
+    "evidence": "npm run exp:fixed > docs/output-01-fixed.txt && npm run exp:sliding > docs/output-02-sliding.txt && npm run exp:token > docs/output-03-token.txt && npm run exp:burst > docs/output-04-burst.txt && npm run exp:client > docs/output-05-client.txt && npm test > docs/output-test.txt"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^26.0.0"
+  }
+}
