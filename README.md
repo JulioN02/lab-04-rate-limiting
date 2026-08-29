@@ -2,8 +2,9 @@
 
 **Plan de Desarrollo Profesional · Temporada 1 · Laboratorio de Ingeniería**
 
-> Hands-on lab: un experimento, no un producto. Este README es la introducción del laboratorio: definición, hipótesis y plan de experimentos.
-> **Estado**: 🔲 Pendiente — lo desarrollo yo (revisar, ejecutar, medir, documentar).
+> Hands-on lab: un experimento, no un producto. Este README cubre la definición, la hipótesis, el plan de experimentos y la medición real de la comparativa bajo ráfaga.
+> **Estado**: ✅ Completado — implementado, medido y verificado (fixed/sliding window + token bucket · API HTTP con 429/Retry-After · 21/21 tests · typecheck limpio).
+> **Repositorio**: [github.com/JulioN02/lab-04-rate-limiting](https://github.com/JulioN02/lab-04-rate-limiting)
 
 ## Problema
 
@@ -82,7 +83,7 @@ Antes de correr los experimentos, las expectativas son:
 - Enforcement: cliente vs. servidor, y límites por clave (IP, usuario, API key)
 - Vínculo con sistemas reales: gateways, proxies y firewalls de aplicación
 
-## Estructura esperada
+## Estructura del repositorio
 
 ```
 lab-04-rate-limiting/
@@ -107,7 +108,7 @@ lab-04-rate-limiting/
     └── output-test.txt
 ```
 
-## Cómo ejecutar este lab (una vez desarrollado)
+## Cómo ejecutar este lab
 
 Este lab no necesita base de datos (estado en memoria), pero sigue el patrón de
 scripts y tests del LAB-01:
@@ -200,6 +201,6 @@ del objeto `BURST_REPORT` de `app.js`, y recargar la página en el navegador.
 - [x] Documentar problema, hipótesis y plan en este README (sección mediciones completada)
 - [x] Tres algoritmos implementados (fixed, sliding, token bucket)
 - [x] Comparativa bajo ráfaga con evidencia real en `docs/output-*.txt` (éxitos, 429, latencias)
-- [x] Invariante verificado con tests: límite respetado, respuesta 429 y reset correcto
+- [x] Invariante verificado con tests: límite respetado, respuesta 429 y reset correcto (21/21 en `npm test`)
 - [x] Conclusión documentada: cuándo conviene cada algoritmo y qué headers exponer
 - [x] `npm run typecheck` limpio
