@@ -189,6 +189,11 @@ demás. Implica guardar un estado por clave (p. ej. `Map<clave, limiter>`) y, en
 sistemas distribuidos, un almacén compartido (Redis, etc.) fuera de alcance de
 este laboratorio.
 
+### Demo en vivo (GitHub Pages)
+
+Dashboard interactivo desplegado en GitHub Pages:
+**[https://julion02.github.io/lab-04-rate-limiting/](https://julion02.github.io/lab-04-rate-limiting/)** — la raíz (`docs/index.html`) redirige a `docs/dashboard/`.
+
 ### Actualizar el dashboard
 
 El dashboard (`docs/dashboard/index.html`) consume la evidencia embebida en
